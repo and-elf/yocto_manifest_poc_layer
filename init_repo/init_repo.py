@@ -24,20 +24,31 @@ def download_manifest(repo_url: str, repo_tag: str, manifest_file: str) -> Dict[
     Returns:
         tuple: Parsed manifest data and dictionary of remotes.
     """
-    manifest_path = get_manifest_url(repo_url,repo_tag,manifest_file)
+    manifest_path = get_manifest_url(repo_url, repo_tag, manifest_file)
     
     with urlopen(url = manifest_path) as f:
         manifest_data = xmltodict.parse(f.read())
-    remotes = {}
-    if 'manifest' in manifest_data and 'remote' in manifest_data['manifest']:
+    manifest_data['manifest']['remotes'] = {}
+    if not isinstance(manifest_data['manifest']['project'], list):
+        manifest_data['manifest']['project'] = [manifest_data['manifest']['project']]
+    if 'manifest' in manifest_data:
         remote = manifest_data['manifest']['remote']
-        remote_name = remote['@name']
-        remote_url = remote['@fetch']
-        remote[remote_name] = remote_url
+        manifest_data['manifest']['remotes'][remote['@name']] = remote['@fetch']
 
-    return manifest_data, remote
+        if 'include' in manifest_data['manifest'] and '@name' in manifest_data['manifest']['include']:
+            include = manifest_data['manifest']['include']
+            if isinstance(include, list):
+                for i in include:
+                    manifest_data_included = download_manifest(repo_url, repo_tag, i['@name'])
+                    manifest_data['manifest']['remotes'] |= manifest_data_included['manifest']['remotes']
+                    manifest_data['manifest']['project'] += manifest_data_included['manifest']['project']
+            else:
+                manifest_data_included = download_manifest(repo_url, repo_tag, include['@name'])
+                manifest_data['manifest']['remotes'] |= manifest_data_included['manifest']['remotes']
+                manifest_data['manifest']['project'] += manifest_data_included['manifest']['project']
+    return manifest_data
 
-def add_submodules(manifest_data: Dict[str, Any], remotes: Dict[str, str]) -> None:
+def add_submodules(manifest_data: Dict[str, Any]) -> None:
     """
     Add or update project tags as git submodules.
 
@@ -49,8 +60,9 @@ def add_submodules(manifest_data: Dict[str, Any], remotes: Dict[str, str]) -> No
 
     if 'manifest' in manifest_data and 'project' in manifest_data['manifest']:
         projects = manifest_data['manifest']['project']
+        remotes = manifest_data['manifest']['remotes']
         for project in projects:
-            url = remotes.get(project.get('@remote'), None)
+            url = remotes[project.get('@remote')]
             if url is None:
                 raise ValueError(f"No URL found for remote '{project.get('@remote')}'")
             name = project['@name']
@@ -88,8 +100,8 @@ def main(repo_url: str, repo_tag: str = "main", manifest_file: str = "default.xm
         manifest_file (str, optional): The name of the manifest file. Defaults to "default.xml".
     """
     initialize_git_directory()
-    manifest_data, remotes = download_manifest(repo_url, repo_tag, manifest_file)
-    add_submodules(manifest_data, remotes)
+    manifest_data = download_manifest(repo_url, repo_tag, manifest_file)
+    add_submodules(manifest_data)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download repo manifest and add project tags as git submodules")
